@@ -97,6 +97,27 @@
       .hint{ font-size:12px }
       button.primary{ min-width: 140px }
     }
+    /* PTT visual states */
+button.primary#pttBtn{
+  transition: transform .1s ease, box-shadow .2s ease, background .2s ease, color .2s ease;
+}
+
+/* Mic OPEN (user holding): green glow */
+button.primary#pttBtn.listening{
+  background: radial-gradient(200% 200% at 0% 0%, #d4ffe6 0%, #b2f5d6 40%, #7be2b4 100%);
+  color:#063a22;
+  box-shadow: 0 12px 30px rgba(64,202,134,.45), 0 0 0 3px rgba(64,202,134,.15) inset;
+}
+
+/* Assistant SPEAKING: purple tone (button disabled visually) */
+button.primary#pttBtn.speaking{
+  background: radial-gradient(200% 200% at 0% 0%, #efe3ff 0%, #d7c6ff 40%, #bda4ff 100%);
+  color:#2f1159;
+}
+
+/* Disabled look */
+button.primary#pttBtn:disabled{ opacity:.6; filter:saturate(.7); cursor:not-allowed }
+
   </style>
 </head>
 <body>
@@ -196,6 +217,8 @@
     pttActive = true;
     setTurnDetection(true);   // ensure VAD on during PTT
     setMicEnabled(true);      // open mic while held
+    setPTTVisual(true, false);    // <-- green “Release to Send”
+
     setState("Listening…", "listening");
   }
 
@@ -203,8 +226,25 @@
     if (!pttActive) return;
     pttActive = false;
     setMicEnabled(false);     // close mic on release
+    setPTTVisual(false, false);   // <-- back to “Hold to Talk”
+
     // After silence, server will commit input; response.create is triggered on commit handler
   }
+  function setPTTVisual(listening=false, speaking=false){
+  pttBtn.classList.toggle('listening', listening);
+  pttBtn.classList.toggle('speaking', speaking);
+  if (speaking){
+    pttBtn.textContent = "Speaking…";
+    pttBtn.setAttribute('aria-pressed','false');
+  } else if (listening){
+    pttBtn.textContent = "Release to Send";
+    pttBtn.setAttribute('aria-pressed','true');
+  } else {
+    pttBtn.textContent = "Hold to Talk";
+    pttBtn.setAttribute('aria-pressed','false');
+  }
+}
+
 
   function extractEphemeralKey(json){
     if (!json) return null;
@@ -264,12 +304,16 @@
     if (m.type === "output_audio_buffer.started"){
       setTurnDetection(false); // disable VAD during TTS
       setMicEnabled(false);    // hard mute local mic during TTS
+      setPTTVisual(false, true);   // <-- purple “Speaking…”
+
       setState("Speaking…","speaking");
       return;
     }
     if (m.type === "output_audio_buffer.stopped"){
       setState("Listening…","listening");
       setTurnDetection(true);  // re-enable VAD ready for next PTT
+      setPTTVisual(false, false);  // <-- back to “Hold to Talk”
+
       setMicEnabled(false);    // keep mic closed until user holds PTT
       return;
     }
@@ -292,6 +336,8 @@
       micStream.getTracks().forEach(t => t.enabled = false);
 
       setState("Fetching token…");
+      setPTTVisual(false, false);
+
       ephemeralKey = await getClientSecret();
 
       setState("Connecting…");
@@ -318,6 +364,8 @@
       await endSession(true); // silent cleanup
     }finally{
       isStartingOrEnding = false; btn.disabled = false; updatePTTEnabled();
+      setPTTVisual(false, false);
+
     }
   }
 
@@ -370,3 +418,4 @@
 
 </body>
 </html>
+
