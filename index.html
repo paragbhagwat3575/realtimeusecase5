@@ -108,18 +108,16 @@
         <div class="title">Sarvada AI Language Teacher</div>
 
         <div class="gifWrap">
-          <!-- Replace GIF if desired -->
-          <!--<img src="https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjExa2V3bW4xN3lxM2E0dXBtZ2JpcnR5aTNuaW1uNnN0eG1uOWxucWZibCZlcD12MV9naWZzX3NlYXJjaCZjdT1n/Y4ak9Ki2GZCbJxAnJD/giphy.gif" alt="Assistant animation">-->
-                 <img src="https://media1.giphy.com/media/v1.Y2lkPTc5MGI3NjExMnRpYW1qYmlqc21jNHhlMGVzZTVnNDNwaG9rcHR3d3BrbzZwN2tmNCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/tDFmApXRr5b24uI3sd/giphy.gif" alt="Assistant animation">
-
-       </div>
+          <img src="https://media1.giphy.com/media/v1.Y2lkPTc5MGI3NjExMnRpYW1qYmlqc21jNHhlMGVzZTVnNDNwaG9rcHR3d3BrbzZwN2tmNCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/tDFmApXRr5b24uI3sd/giphy.gif" alt="Assistant animation">
+        </div>
 
         <div class="controls">
           <div class="cta">
             <button id="startBtn" class="primary">Start</button>
+            <button id="pttBtn" class="primary" style="min-width:200px">Hold to Talk</button>
             <span id="statePill" class="pill"><span id="dot" class="dot"></span><span id="pillLabel">Ready</span></span>
           </div>
-          <div class="hint">One tap. We greet the user and start voice chat. Live captions appear on the right.</div>
+          <div class="hint">Press & Hold to Talk (or hold <b>Spacebar</b>). The mic is closed when you’re not holding.</div>
         </div>
       </section>
 
@@ -143,6 +141,7 @@
 
   // UI
   const btn = document.getElementById("startBtn");
+  const pttBtn = document.getElementById("pttBtn");
   const chatEl = document.getElementById("chat");
   const stateLabel = document.getElementById("stateLabel");
   const pillLabel = document.getElementById("pillLabel");
@@ -152,12 +151,9 @@
 
   // WebRTC state
   let pc=null, dc=null, micStream=null, ephemeralKey=null, outputText="";
-  let isActive = false;         // <-- single source of truth
+  let isActive = false;         // single source of truth
   let isStartingOrEnding = false;
-
-  function setMicEnabled(enabled){
-  try { micStream?.getTracks().forEach(t => t.enabled = enabled); } catch {}
-  }
+  let pttActive = false;
 
   function say(text, who="ai"){
     if(!text) return;
@@ -167,21 +163,57 @@
     chatEl.appendChild(div);
     chatEl.scrollTop = chatEl.scrollHeight;
   }
+
   function setState(label, mode){
     stateLabel.textContent = label; pillLabel.textContent = label;
     dot.classList.remove("speaking","listening"); eq.style.display = "none";
     if(mode==="speaking"){ dot.classList.add("speaking"); eq.style.display = "inline-grid"; }
     if(mode==="listening"){ dot.classList.add("listening"); }
+    updatePTTEnabled();
   }
 
-  const extractEphemeralKey = (json) => {
+  function setMicEnabled(enabled){
+    try { micStream?.getTracks().forEach(t => t.enabled = enabled); } catch {}
+  }
+
+  function isAssistantSpeaking(){ return dot.classList.contains("speaking"); }
+
+  function setTurnDetection(enabled){
+    if (!dc || dc.readyState !== "open") return;
+    const td = enabled ? { type: "server_vad" } : null; // null disables VAD
+    dc.send(JSON.stringify({
+      type: "session.update",
+      session: { audio: { input: { turn_detection: td } } }
+    }));
+  }
+
+  function canTalkNow(){
+    return isActive && !isAssistantSpeaking() && dc?.readyState === "open";
+  }
+
+  function pttDown(){
+    if (!canTalkNow()) return;
+    pttActive = true;
+    setTurnDetection(true);   // ensure VAD on during PTT
+    setMicEnabled(true);      // open mic while held
+    setState("Listening…", "listening");
+  }
+
+  function pttUp(){
+    if (!pttActive) return;
+    pttActive = false;
+    setMicEnabled(false);     // close mic on release
+    // After silence, server will commit input; response.create is triggered on commit handler
+  }
+
+  function extractEphemeralKey(json){
     if (!json) return null;
     if (typeof json.value === "string") return json.value;
     if (json.client_secret?.value) return json.client_secret.value;
     if (json.clientSecret?.value)  return json.clientSecret.value;
     if (json.secret?.value)        return json.secret.value;
     return null;
-  };
+  }
 
   async function getClientSecret(){
     const r = await fetch(TOKEN_ENDPOINT, {
@@ -201,13 +233,16 @@
     dc = pc.createDataChannel("oai-events");
     dc.onopen = ()=>{
       if (!isActive) return; // guard if user ended during setup
-      // Ask for audio+text + don't interrupt TTS
+      // Ask for audio+text modalities
       dc.send(JSON.stringify({ type:"session.update", session:{ output_modalities:["audio","text"] }}));
-      dc.send(JSON.stringify({ type:"session.update", session:{ audio:{ input:{ turn_detection:{ interrupt_response:false }}}}}));
-      // Kick off the greeting defined in your backend instructions
+      // Default: allow VAD but we will disable during TTS
+      dc.send(JSON.stringify({ type:"session.update", session:{ audio:{ input:{ turn_detection:{ type:"server_vad" }}}}}));
+      // Kick off the greeting defined by backend instructions
       dc.send(JSON.stringify({ type:"response.create" }));
       setState("Connected", "listening");
+      updatePTTEnabled();
     };
+
     dc.onmessage = (evt)=>{
       if (!isActive) return; // ignore late events after end
       try{ handleServerEvent(JSON.parse(evt.data)); }catch{}
@@ -221,45 +256,40 @@
 
     // Live captions (assistant side)
     if (m.type === "response.output_audio_transcript.delta" && typeof m.delta === "string") { outputText += m.delta; return; }
-    if (m.type === "response.output_audio_transcript.done") { say(outputText.trim(), "ai"); outputText=""; return; }
+    if (m.type === "response.output_audio_transcript.done")  { say(outputText.trim(), "ai"); outputText=""; return; }
     if (m.type === "response.output_text.delta" && typeof m.delta === "string") { outputText += m.delta; return; }
     if (m.type === "response.output_text.done") { say(outputText.trim(), "ai"); outputText=""; return; }
 
-    // Speaking indicators
-    if (m.type === "output_audio_buffer.started"){ setState("Speaking…","speaking"); return; }
-    if (m.type === "output_audio_buffer.stopped"){ setState("Listening…","listening"); return; }
+    // Speaking indicators → anti-interrupt logic
+    if (m.type === "output_audio_buffer.started"){
+      setTurnDetection(false); // disable VAD during TTS
+      setMicEnabled(false);    // hard mute local mic during TTS
+      setState("Speaking…","speaking");
+      return;
+    }
+    if (m.type === "output_audio_buffer.stopped"){
+      setState("Listening…","listening");
+      setTurnDetection(true);  // re-enable VAD ready for next PTT
+      setMicEnabled(false);    // keep mic closed until user holds PTT
+      return;
+    }
 
     // When user audio is committed, ask the model to respond
     if (m.type === "input_audio_buffer.committed"){
       if (dc?.readyState === "open") dc.send(JSON.stringify({ type:"response.create" }));
       return;
     }
-    
-    if (m.type === "output_audio_buffer.started"){
-    setMicEnabled(false);             // 🔇 Mute mic while assistant talks
-    setState("Speaking…","speaking");
-    return;
-  }
-  if (m.type === "output_audio_buffer.stopped"){
-    setState("Listening…","listening");
-    setMicEnabled(true);              // 🔊 Re-enable mic when assistant stops
-    return;
-  }
-
-  if (m.type === "input_audio_buffer.committed"){
-    if (dc?.readyState === "open") dc.send(JSON.stringify({ type:"response.create" }));
-    return;
-  }
   }
 
   async function startSession(){
     if (isActive || isStartingOrEnding) return;
-    isStartingOrEnding = true; btn.disabled = true;
+    isStartingOrEnding = true; btn.disabled = true; pttBtn.disabled = true;
 
     try{
       setState("Requesting mic…");
       micStream = await navigator.mediaDevices.getUserMedia({ audio:true });
-      micStream.getTracks().forEach(t => t.enabled = true);
+      // Start with mic CLOSED; PTT will open it
+      micStream.getTracks().forEach(t => t.enabled = false);
 
       setState("Fetching token…");
       ephemeralKey = await getClientSecret();
@@ -287,13 +317,13 @@
       alert(e?.message || e);
       await endSession(true); // silent cleanup
     }finally{
-      isStartingOrEnding = false; btn.disabled = false;
+      isStartingOrEnding = false; btn.disabled = false; updatePTTEnabled();
     }
   }
 
   async function endSession(silent=false){
     if (!isActive && !isStartingOrEnding && !pc) return;
-    isStartingOrEnding = true; btn.disabled = true;
+    isStartingOrEnding = true; btn.disabled = true; pttBtn.disabled = true;
 
     try {
       try { dc?.send(JSON.stringify({ type:"response.cancel" })); } catch {}
@@ -301,17 +331,37 @@
       try { pc?.close(); } catch {}
     } finally {
       pc=null; dc=null; micStream=null; ephemeralKey=null;
-      isActive = false;
+      isActive = false; pttActive = false;
       btn.textContent = "Start";
       if (!silent) setState("Ended");
-      isStartingOrEnding = false; btn.disabled = false;
+      isStartingOrEnding = false; btn.disabled = false; updatePTTEnabled();
     }
   }
 
-  // Single toggle handler (prevents double start)
+  function updatePTTEnabled(){
+    const canUse = isActive && !isAssistantSpeaking();
+    pttBtn.disabled = !canUse;
+  }
+
+  // Start/End toggle
   btn.addEventListener("click", async () => {
     if (isStartingOrEnding) return;
     if (isActive) { await endSession(); } else { await startSession(); }
+  });
+
+  // PTT events (mouse/touch)
+  pttBtn.addEventListener("mousedown", pttDown);
+  pttBtn.addEventListener("touchstart", (e)=>{ e.preventDefault(); pttDown(); }, { passive:false });
+  ["mouseup","mouseleave","touchend","touchcancel"].forEach(evt =>
+    pttBtn.addEventListener(evt, pttUp)
+  );
+
+  // PTT via Spacebar
+  window.addEventListener("keydown", (e)=>{
+    if (e.code === "Space" && !e.repeat){ e.preventDefault(); pttDown(); }
+  });
+  window.addEventListener("keyup", (e)=>{
+    if (e.code === "Space"){ e.preventDefault(); pttUp(); }
   });
 
   // Clean up if the user navigates away
@@ -320,4 +370,3 @@
 
 </body>
 </html>
-
