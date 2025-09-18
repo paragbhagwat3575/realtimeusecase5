@@ -102,19 +102,16 @@ button.primary#pttBtn{
   transition: transform .1s ease, box-shadow .2s ease, background .2s ease, color .2s ease;
 }
 
-/* Mic OPEN (user holding): green glow */
-button.primary#pttBtn.listening{
-  background: radial-gradient(200% 200% at 0% 0%, #d4ffe6 0%, #b2f5d6 40%, #7be2b4 100%);
-  color:#063a22;
-  box-shadow: 0 12px 30px rgba(64,202,134,.45), 0 0 0 3px rgba(64,202,134,.15) inset;
+/* PTT visual states (attribute-based = very reliable) */
+button.primary#pttBtn[data-state="listening"]{
+  background: radial-gradient(200% 200% at 0% 0%, #d4ffe6 0%, #b2f5d6 40%, #7be2b4 100%) !important;
+  color:#063a22 !important;
+  box-shadow: 0 12px 30px rgba(64,202,134,.45), 0 0 0 3px rgba(64,202,134,.15) inset !important;
 }
-
-/* Assistant SPEAKING: purple tone (button disabled visually) */
-button.primary#pttBtn.speaking{
-  background: radial-gradient(200% 200% at 0% 0%, #efe3ff 0%, #d7c6ff 40%, #bda4ff 100%);
-  color:#2f1159;
+button.primary#pttBtn[data-state="speaking"]{
+  background: radial-gradient(200% 200% at 0% 0%, #efe3ff 0%, #d7c6ff 40%, #bda4ff 100%) !important;
+  color:#2f1159 !important;
 }
-
 /* Disabled look */
 button.primary#pttBtn:disabled{ opacity:.6; filter:saturate(.7); cursor:not-allowed }
 
@@ -217,7 +214,7 @@ button.primary#pttBtn:disabled{ opacity:.6; filter:saturate(.7); cursor:not-allo
     pttActive = true;
     setTurnDetection(true);   // ensure VAD on during PTT
     setMicEnabled(true);      // open mic while held
-    setPTTVisual(true, false);    // <-- green “Release to Send”
+    requestAnimationFrame(() => setPTTVisual(true, false)); // green
 
     setState("Listening…", "listening");
   }
@@ -226,13 +223,18 @@ button.primary#pttBtn:disabled{ opacity:.6; filter:saturate(.7); cursor:not-allo
     if (!pttActive) return;
     pttActive = false;
     setMicEnabled(false);     // close mic on release
-    setPTTVisual(false, false);   // <-- back to “Hold to Talk”
+    requestAnimationFrame(() => setPTTVisual(false, false)); // back to default
 
     // After silence, server will commit input; response.create is triggered on commit handler
   }
   function setPTTVisual(listening=false, speaking=false){
+  // set data-state (drives CSS), keep classes for future if needed
+  const state = speaking ? 'speaking' : (listening ? 'listening' : '');
+  pttBtn.dataset.state = state;
   pttBtn.classList.toggle('listening', listening);
   pttBtn.classList.toggle('speaking', speaking);
+
+  // update label
   if (speaking){
     pttBtn.textContent = "Speaking…";
     pttBtn.setAttribute('aria-pressed','false');
@@ -243,8 +245,11 @@ button.primary#pttBtn:disabled{ opacity:.6; filter:saturate(.7); cursor:not-allo
     pttBtn.textContent = "Hold to Talk";
     pttBtn.setAttribute('aria-pressed','false');
   }
-}
 
+  // Nudge some mobile browsers to repaint gradients immediately
+  // (read → write forces a reflow)
+  void pttBtn.offsetHeight;
+}
 
   function extractEphemeralKey(json){
     if (!json) return null;
@@ -418,6 +423,7 @@ button.primary#pttBtn:disabled{ opacity:.6; filter:saturate(.7); cursor:not-allo
 
 </body>
 </html>
+
 
 
 
